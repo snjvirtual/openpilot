@@ -29,7 +29,7 @@ UIStateSP::UIStateSP(QObject *parent) : UIState(parent) {
     "wideRoadCameraState", "managerState", "selfdriveState", "longitudinalPlan",
     "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
     "carControl", "gpsLocationExternal", "gpsLocation", "liveTorqueParameters",
-    "carStateSP", "liveParameters", "liveMapDataSP"
+    "carStateSP", "liveParameters", "liveMapDataSP", "onroadEvents"
   });
 
   // update timer
@@ -70,6 +70,8 @@ void ui_update_params_sp(UIStateSP *s) {
   s->scene.onroadScreenOffControl = params.getBool("OnroadScreenOffControl");
   s->scene.onroadScreenOffTimerParam = std::atoi(params.get("OnroadScreenOffTimer").c_str());
   s->reset_onroad_sleep_timer();
+
+  s->scene.turn_signals = params.getBool("ShowTurnSignals");
 }
 
 void UIStateSP::reset_onroad_sleep_timer() {

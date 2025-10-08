@@ -116,6 +116,19 @@ void HudRendererSP::updateState(const UIState &s) {
 
   greenLightAlert = lp_sp.getE2eAlerts().getGreenLightAlert();
   leadDepartAlert = lp_sp.getE2eAlerts().getLeadDepartAlert();
+
+  leftBlinkerOn = car_state.getLeftBlinker();
+  rightBlinkerOn = car_state.getRightBlinker();
+  showTurnSignals = s.scene.turn_signals;
+
+  // Check for the LANE_CHANGE_BLOCKED Event
+  laneChangeBlocked = false;
+  for(const auto &event : sm["onroadEvents"].getOnroadEvents()) {
+    if(event.getName() == cereal::OnroadEvent::EventName::LANE_CHANGE_BLOCKED) {
+      laneChangeBlocked = true;
+      break;
+    }
+  }
 }
 
 void HudRendererSP::draw(QPainter &p, const QRect &surface_rect) {
@@ -228,6 +241,11 @@ void HudRendererSP::draw(QPainter &p, const QRect &surface_rect) {
       drawE2eAlert(p, surface_rect);
     } else {
       e2eAlertFrame = 0;
+    }
+
+    // Blinker
+    if(showTurnSignals) {
+      drawBlinker(p, surface_rect);
     }
   }
 
@@ -731,4 +749,80 @@ void HudRendererSP::drawE2eAlert(QPainter &p, const QRect &surface_rect) {
   QPointF pixmapCenterOffset = QPointF(alert_img.width() / 2.0, alert_img.height() / 2.0);
   QPointF drawPoint = center - pixmapCenterOffset;
   p.drawPixmap(drawPoint, alert_img);
+}
+
+void HudRendererSP::drawBlinker(QPainter &p, const QRect &surface_rect) {
+  if(!leftBlinkerOn && !rightBlinkerOn) {
+    blinkerFrameCounter = 0;
+    return;
+  }
+  blinkerFrameCounter++;
+
+  // Some Settings
+  const int circleRadius = 44;
+  const int arrowLength  = 44;
+  const int x_gap = 180;
+  const int y_offset = 272;
+
+  // Background Style - Red if blocked
+  QColor bgColor = laneChangeBlocked ? QColor(135, 23, 23) : QColor(23, 134, 68);
+  QPen bgBorder(Qt::white, 5);
+
+  // Arrow Style - Red if blocked
+  QColor arrowColor = laneChangeBlocked ? QColor(66, 12, 12) : QColor(12, 67, 34);
+  if(pulseElement(blinkerFrameCounter)) {
+    arrowColor = Qt::white;
+  }
+  QPen arrowPen(Qt::NoPen);
+  QBrush arrowBrush(arrowColor);
+
+  // Some Lambdas for the Circle..
+  auto drawCircle = [&](int cx, int cy) {
+    p.setPen(bgBorder);
+    p.setBrush(bgColor);
+    p.drawEllipse(QPoint(cx, cy), circleRadius, circleRadius);
+  };
+
+  // ..and Arrow
+  auto drawArrow = [&](int cx, int cy, bool left) {
+    QPolygon arrow;
+    int bodyLength = arrowLength / 2;
+    int bodyWidth = arrowLength / 2;
+    int headLength = arrowLength / 2;
+    int headWidth = arrowLength;
+
+    if (left) {
+        arrow << QPoint(cx + bodyLength,  cy - bodyWidth / 2)
+              << QPoint(cx,               cy - bodyWidth / 2)
+              << QPoint(cx,               cy - headWidth / 2)
+              << QPoint(cx - headLength,  cy                )
+              << QPoint(cx,               cy + headWidth / 2)
+              << QPoint(cx,               cy + bodyWidth / 2)
+              << QPoint(cx + bodyLength,  cy + bodyWidth / 2);
+    } else {
+        arrow << QPoint(cx - bodyLength,  cy - bodyWidth / 2)
+              << QPoint(cx,               cy - bodyWidth / 2)
+              << QPoint(cx,               cy - headWidth / 2)
+              << QPoint(cx + headLength,  cy                )
+              << QPoint(cx,               cy + headWidth / 2)
+              << QPoint(cx,               cy + bodyWidth / 2)
+              << QPoint(cx - bodyLength,  cy + bodyWidth / 2);
+    }
+
+      p.setPen(arrowPen);
+      p.setBrush(arrowBrush);
+      p.drawPolygon(arrow);
+  };
+
+  // Draw Left
+  if (leftBlinkerOn) {
+    drawCircle(surface_rect.center().x() - x_gap, y_offset);
+    drawArrow(surface_rect.center().x() - x_gap, y_offset, true);
+  }
+
+  // Draw Right
+  if (rightBlinkerOn) {
+      drawCircle(surface_rect.center().x() + x_gap, y_offset);
+      drawArrow(surface_rect.center().x() + x_gap, y_offset, false);
+  }
 }
