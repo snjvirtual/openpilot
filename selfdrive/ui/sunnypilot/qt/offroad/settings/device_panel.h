@@ -32,6 +32,7 @@ private:
   MaxTimeOffroad *maxTimeOffroad;
   ButtonParamControlSP *toggleDeviceBootMode;
   QVBoxLayout *power_group_layout;
+  bool offroad;
 
   const QString alwaysOffroadStyle = R"(
     PushButtonSP {
