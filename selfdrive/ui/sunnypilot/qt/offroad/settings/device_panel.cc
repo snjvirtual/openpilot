@@ -23,6 +23,7 @@ DevicePanelSP::DevicePanelSP(SettingsWindowSP *parent) : DevicePanel(parent) {
     {"regulatoryBtn", tr("Regulatory"), ""},
     {"translateBtn", tr("Language"), ""},
     {"resetParams", tr("Reset Settings"), ""},
+    {"onroadUploadsBtn", tr("Onroad Uploads"), "OnroadUploads"}
   };
 
   int row = 0, col = 0;
@@ -75,6 +76,8 @@ DevicePanelSP::DevicePanelSP(SettingsWindowSP *parent) : DevicePanel(parent) {
 
   connect(buttons["resetParams"], &PushButtonSP::clicked, this, &DevicePanelSP::resetSettings);
 
+  connect(buttons["onroadUploadsBtn"], &PushButtonSP::clicked, buttons["onroadUploadsBtn"], &PushButtonSP::updateButton);
+
   // Max Time Offroad
   maxTimeOffroad = new MaxTimeOffroad();
   connect(maxTimeOffroad, &OptionControlSP::updateLabels, maxTimeOffroad, &MaxTimeOffroad::refresh);
@@ -124,6 +127,7 @@ DevicePanelSP::DevicePanelSP(SettingsWindowSP *parent) : DevicePanel(parent) {
     poweroffBtn,
     offroadBtn,
     buttons["quietModeBtn"],
+    buttons["onroadUploadsBtn"],
   };
 
   QObject::connect(uiState(), &UIState::offroadTransition, [=](bool _offroad) {
@@ -194,6 +198,12 @@ void DevicePanelSP::updateState() {
     currStatus = DeviceSleepModeStatus::OFFROAD;
   }
   toggleDeviceBootMode->setDescription(deviceSleepModeDescription(currStatus));
+
+  if (offroad and not offroad_mode_param) {
+    power_group_layout->insertWidget(0, offroadBtn, 0, Qt::AlignHCenter);
+  } else {
+    AddWidgetAt(0, offroadBtn);
+  }
 
   if (offroad and not offroad_mode_param) {
     power_group_layout->insertWidget(0, offroadBtn, 0, Qt::AlignHCenter);
