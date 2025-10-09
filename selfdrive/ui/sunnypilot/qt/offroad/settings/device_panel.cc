@@ -204,10 +204,4 @@ void DevicePanelSP::updateState() {
   } else {
     AddWidgetAt(0, offroadBtn);
   }
-
-  if (offroad and not offroad_mode_param) {
-    power_group_layout->insertWidget(0, offroadBtn, 0, Qt::AlignHCenter);
-  } else {
-    AddWidgetAt(0, offroadBtn);
-  }
 }
