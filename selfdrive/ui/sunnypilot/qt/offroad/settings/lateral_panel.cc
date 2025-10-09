@@ -224,6 +224,9 @@ void LateralPanel::updateToggles(bool _offroad) {
   torqueLateralControlToggle->setEnabled(_offroad && torque_allowed && !nnlcToggle->isToggled());
   torqueLateralControlSettingsButton->setEnabled(torqueLateralControlToggle->isToggled());
 
+  torqueLateralControlToggle->setEnabled(_offroad && torque_allowed && !nnlcToggle->isToggled());
+  torqueLateralControlSettingsButton->setEnabled(torqueLateralControlToggle->isToggled());
+
   blinkerPauseLateralSettings->refresh();
 
   offroad = _offroad;
