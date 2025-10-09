@@ -62,7 +62,11 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
 def use_github_runner(started, params, CP: car.CarParams) -> bool:
-  return not PC and params.get_bool("EnableGithubRunner") and not params.get_bool("NetworkMetered")
+  return not PC and params.get_bool("EnableGithubRunner") and (
+    not params.get_bool("NetworkMetered") and not params.get_bool("GithubRunnerSufficientVoltage"))
+
+def use_copyparty(started, params, CP: car.CarParams) -> bool:
+  return bool(params.get_bool("EnableCopyparty"))
 
 def sunnylink_ready_shim(started, params, CP: car.CarParams) -> bool:
   """Shim for sunnylink_ready to match the process manager signature."""
@@ -88,6 +92,12 @@ def is_stock_model(started, params, CP: car.CarParams) -> bool:
   """Check if the active model runner is stock."""
   return bool(get_active_model_runner(params, not started) == custom.ModelManagerSP.Runner.stock)
 
+def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if not params.get_bool("OnroadUploads"):
+    return only_offroad(started, params, CP)
+
+  return always_run(started, params, CP)
+
 def mapd_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   return bool(os.path.exists(Paths.mapd_root()))
 
@@ -107,9 +117,9 @@ procs = [
 
   NativeProcess("camerad", "system/camerad", ["./camerad"], driverview, enabled=not WEBCAM),
   PythonProcess("webcamerad", "tools.webcam.camerad", driverview, enabled=WEBCAM),
-  NativeProcess("logcatd", "system/logcatd", ["./logcatd"], only_onroad, platform.system() != "Darwin"),
-  NativeProcess("proclogd", "system/proclogd", ["./proclogd"], only_onroad, platform.system() != "Darwin"),
-  PythonProcess("micd", "system.micd", iscar),
+  PythonProcess("proclogd", "system.proclogd", only_onroad, enabled=platform.system() != "Darwin"),
+  PythonProcess("journald", "system.journald", only_onroad, platform.system() != "Darwin"),
+  #PythonProcess("micd", "system.micd", iscar),
   PythonProcess("timed", "system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "selfdrive.modeld.modeld", and_(only_onroad, is_stock_model)),
@@ -118,7 +128,7 @@ procs = [
   PythonProcess("sensord", "system.sensord.sensord", only_onroad, enabled=not PC),
   NativeProcess("ui", "selfdrive/ui", ["./ui"], always_run, watchdog_max_dt=(5 if not PC else None)),
   PythonProcess("raylib_ui", "selfdrive.ui.ui", always_run, enabled=False, watchdog_max_dt=(5 if not PC else None)),
-  PythonProcess("soundd", "selfdrive.ui.soundd", and_(only_onroad, not_joystick)),
+  PythonProcess("soundd", "selfdrive.ui.soundd", only_onroad),
   PythonProcess("locationd", "selfdrive.locationd.locationd", only_onroad),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "selfdrive.locationd.calibrationd", only_onroad),
@@ -133,7 +143,7 @@ procs = [
   PythonProcess("pandad", "selfdrive.pandad.pandad", always_run),
   PythonProcess("paramsd", "selfdrive.locationd.paramsd", only_onroad),
   PythonProcess("lagd", "selfdrive.locationd.lagd", only_onroad),
-  NativeProcess("ubloxd", "system/ubloxd", ["./ubloxd"], ublox, enabled=TICI),
+  #PythonProcess("ubloxd", "system.ubloxd.ubloxd", ublox, enabled=TICI),
   PythonProcess("pigeond", "system.ubloxd.pigeond", ublox, enabled=TICI),
   PythonProcess("plannerd", "selfdrive.controls.plannerd", not_long_maneuver),
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
@@ -141,8 +151,9 @@ procs = [
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "system.updated.updated", only_offroad, enabled=not PC),
-  PythonProcess("uploader", "system.loggerd.uploader", always_run),
+  PythonProcess("uploader", "system.loggerd.uploader", uploader_ready),
   PythonProcess("statsd", "system.statsd", always_run),
+  PythonProcess("beep", "selfdrive.selfdrived.beep", always_run),
   PythonProcess("feedbackd", "selfdrive.ui.feedback.feedbackd", only_onroad),
 
   # debug procs
@@ -169,6 +180,9 @@ procs += [
   # mapd
   NativeProcess("mapd", Paths.mapd_root(), ["bash", "-c", f"{MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
   PythonProcess("mapd_manager", "sunnypilot.mapd.mapd_manager", always_run),
+
+  # locationd
+  NativeProcess("locationd_llk", "sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 ]
 
 if os.path.exists("./github_runner.sh"):
@@ -176,5 +190,16 @@ if os.path.exists("./github_runner.sh"):
 
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
   procs += [PythonProcess("sunnylink_uploader", "sunnypilot.sunnylink.uploader", use_sunnylink_uploader_shim)]
+
+if os.path.exists("../../third_party/copyparty/copyparty-sfx.py"):
+  sunnypilot_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+  copyparty_args = [f"-v{Paths.crash_log_root()}:/swaglogs:r"]
+  copyparty_args += [f"-v{Paths.log_root()}:/routes:r"]
+  copyparty_args += [f"-v{Paths.model_root()}:/models:rw"]
+  copyparty_args += [f"-v{sunnypilot_root}:/sunnypilot:rw"]
+  copyparty_args += ["-p8080"]
+  copyparty_args += ["-z"]
+  copyparty_args += ["-q"]
+  procs += [NativeProcess("copyparty-sfx", "third_party/copyparty", ["./copyparty-sfx.py", *copyparty_args], and_(only_offroad, use_copyparty))]
 
 managed_processes = {p.name: p for p in procs}

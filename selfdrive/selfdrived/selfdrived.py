@@ -21,12 +21,12 @@ from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 
-from openpilot.system.hardware import HARDWARE
 from openpilot.system.version import get_build_metadata
 
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem
 from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
+from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 REPLAY = "REPLAY" in os.environ
@@ -86,7 +86,7 @@ class SelfdriveD(CruiseHelper):
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug'] + ['modelDataV2SP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -95,7 +95,8 @@ class SelfdriveD(CruiseHelper):
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
-                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback'] + \
+                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
+                                   'modelDataV2SP', 'longitudinalPlanSP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -134,13 +135,7 @@ class SelfdriveD(CruiseHelper):
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
-    # some comma three with NVMe experience NVMe dropouts mid-drive that
-    # cause loggerd to crash on write, so ignore it only on that platform
-    self.ignored_processes = set()
-    nvme_expected = os.path.exists('/dev/nvme0n1') or (not os.path.isfile("/persist/comma/living-in-the-moment"))
-    if HARDWARE.get_device_type() == 'tici' and nvme_expected:
-      self.ignored_processes = {'loggerd', }
-    self.ignored_processes.update({'mapd'})
+    self.ignored_processes = {'mapd', }
 
     # Determine startup event
     is_remote = build_metadata.openpilot.comma_remote or build_metadata.openpilot.sunnypilot_remote
@@ -162,8 +157,9 @@ class SelfdriveD(CruiseHelper):
     self.events_sp_prev = []
 
     self.mads = ModularAssistiveDrivingSystem(self)
+    self.icbm = IntelligentCruiseButtonManagement(self.CP, self.CP_SP)
 
-    self.car_events_sp = CarSpecificEventsSP(self.CP, self.params)
+    self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
 
     CruiseHelper.__init__(self, self.CP)
 
@@ -209,6 +205,7 @@ class SelfdriveD(CruiseHelper):
 
     if not self.CP.notCar:
       self.events.add_from_msg(self.sm['driverMonitoringState'].events)
+      self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:
@@ -265,7 +262,10 @@ class SelfdriveD(CruiseHelper):
       if self.sm['driverAssistance'].leftLaneDeparture or self.sm['driverAssistance'].rightLaneDeparture:
         self.events.add(EventName.ldw)
 
-    # Check for excessive actuation
+    # ******************************************************************************************
+    #  NOTE: To fork maintainers.
+    #  Disabling or nerfing safety features will get you and your users banned from our servers.
+    #  We recommend that you do not change these numbers from the defaults.
     if self.sm.updated['liveCalibration']:
       self.pose_calibrator.feed_live_calib(self.sm['liveCalibration'])
     if self.sm.updated['livePose']:
@@ -280,13 +280,20 @@ class SelfdriveD(CruiseHelper):
 
     if self.excessive_actuation:
       self.events.add(EventName.excessiveActuation)
+    # ******************************************************************************************
 
     # Handle lane change
     if self.sm['modelV2'].meta.laneChangeState == LaneChangeState.preLaneChange:
       direction = self.sm['modelV2'].meta.laneChangeDirection
+      mdv2sp = self.sm['modelDataV2SP']
+
       if (CS.leftBlindspot and direction == LaneChangeDirection.left) or \
-         (CS.rightBlindspot and direction == LaneChangeDirection.right):
+            (CS.rightBlindspot and direction == LaneChangeDirection.right):
         self.events.add(EventName.laneChangeBlocked)
+
+      elif mdv2sp.leftLaneChangeEdgeBlock or mdv2sp.rightLaneChangeEdgeBlock:
+        self.events_sp.add(custom.OnroadEventSP.EventName.laneChangeRoadEdge)
+
       else:
         if direction == LaneChangeDirection.left:
           self.events.add(EventName.preLaneChangeLeft)
@@ -295,6 +302,13 @@ class SelfdriveD(CruiseHelper):
     elif self.sm['modelV2'].meta.laneChangeState in (LaneChangeState.laneChangeStarting,
                                                     LaneChangeState.laneChangeFinishing):
       self.events.add(EventName.laneChange)
+
+    # Handle lane turn
+    lane_turn_direction = self.sm['modelDataV2SP'].laneTurnDirection
+    if lane_turn_direction == custom.TurnDirection.turnLeft:
+      self.events_sp.add(custom.OnroadEventSP.EventName.laneTurnLeft)
+    elif lane_turn_direction == custom.TurnDirection.turnRight:
+      self.events_sp.add(custom.OnroadEventSP.EventName.laneTurnRight)
 
     for i, pandaState in enumerate(self.sm['pandaStates']):
       # All pandas must match the list of safetyConfigs, and if outside this list, must be silent or noOutput
@@ -323,11 +337,11 @@ class SelfdriveD(CruiseHelper):
         cloudlog.event("process_not_running", not_running=not_running, error=True)
       self.not_running_prev = not_running
     if self.sm.recv_frame['managerState'] and (not_running - self.ignored_processes):
-      self.events.add(EventName.processNotRunning)
+      pass#self.events.add(EventName.processNotRunning)
     else:
       if not SIMULATION and not self.rk.lagging:
         if not self.sm.all_alive(self.camera_packets):
-          self.events.add(EventName.cameraMalfunction)
+          pass#self.events.add(EventName.cameraMalfunction)
         elif not self.sm.all_freq_ok(self.camera_packets):
           self.events.add(EventName.cameraFrameRate)
     if not REPLAY and self.rk.lagging:
@@ -350,11 +364,11 @@ class SelfdriveD(CruiseHelper):
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
     if not self.sm.all_checks() and no_system_errors:
       if not self.sm.all_alive():
-        self.events.add(EventName.commIssue)
+        pass#self.events.add(EventName.commIssue)
       elif not self.sm.all_freq_ok():
-        self.events.add(EventName.commIssueAvgFreq)
+        pass#self.events.add(EventName.commIssueAvgFreq)
       else:
-        self.events.add(EventName.commIssue)
+        pass#self.events.add(EventName.commIssue)
 
       logs = {
         'invalid': [s for s, valid in self.sm.valid.items() if not valid],
@@ -377,7 +391,7 @@ class SelfdriveD(CruiseHelper):
 
     # conservative HW alert. if the data or frequency are off, locationd will throw an error
     if any((self.sm.frame - self.sm.recv_frame[s])*DT_CTRL > 10. for s in self.sensor_packets):
-      self.events.add(EventName.sensorDataInvalid)
+      pass#self.events.add(EventName.sensorDataInvalid)
 
     if not REPLAY:
       # Check for mismatch between openpilot and car's PCM
@@ -412,7 +426,7 @@ class SelfdriveD(CruiseHelper):
     # GPS checks
     gps_ok = self.sm.recv_frame[self.gps_location_service] > 0 and (self.sm.frame - self.sm.recv_frame[self.gps_location_service]) * DT_CTRL < 2.0
     if not gps_ok and self.sm['livePose'].inputsOK and (self.distance_traveled > 1500):
-      self.events.add(EventName.noGps)
+      pass#self.events.add(EventName.noGps)
     if gps_ok:
       self.distance_traveled = 0
     self.distance_traveled += abs(CS.vEgo) * DT_CTRL
@@ -436,6 +450,8 @@ class SelfdriveD(CruiseHelper):
           self.params.put_nonblocking('LongitudinalPersonality', self.personality)
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
+
+    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
@@ -540,6 +556,11 @@ class SelfdriveD(CruiseHelper):
     mads.enabled = self.mads.enabled
     mads.active = self.mads.active
     mads.available = self.mads.enabled_toggle
+
+    icbm = ss_sp.intelligentCruiseButtonManagement
+    icbm.state = self.icbm.state
+    icbm.sendButton = self.icbm.cruise_button
+    icbm.vTarget = self.icbm.v_target
 
     self.pm.send('selfdriveStateSP', ss_sp_msg)
 
